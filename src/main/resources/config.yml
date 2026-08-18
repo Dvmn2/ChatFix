@@ -1,0 +1,5 @@
+settings:
+  enabled: true
+  message: "Config enabled!"
+  # Радиус (в блоках) в котором видно локальные сообщения
+  local-chat-radius: 15.0
