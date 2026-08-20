@@ -140,9 +140,9 @@ public class ChatListener implements Listener {
     // Формат: [prefix] сообщение [postfix]
     private Component buildMessage(String prefix, String text, String postfix) {
         StringBuilder sb = new StringBuilder();
-        if (!prefix.isEmpty()) sb.append(prefix).append(' ');
+        if (!prefix.isEmpty()) sb.append(prefix);
         sb.append(text);
-        if (!postfix.isEmpty()) sb.append(' ').append(postfix);
+        if (!postfix.isEmpty()) sb.append(postfix);
         return legacy.deserialize(sb.toString());
     }
 }

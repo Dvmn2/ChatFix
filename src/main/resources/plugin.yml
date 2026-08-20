@@ -1,17 +1,12 @@
 name: ChatFix
 description: A plugin that changes how the chat works and allows operators to modify the prefix and suffix of individual players' messages.
-version: '1.0.0'
+version: '1.1.0'
 
 main: net.dvmn2.chatFix.ChatFix
 api-version: '1.21.11'
 load: POSTWORLD
 
 authors: [ DVMN2 ]
-
-commands:
-  chatfix:
-    description: Настройка префиксов/постфиксов чата игрока
-    usage: /chatfix <local|global> <prefix|postfix|reset> <ник> [текст...]
 
 permissions:
   chatmanager.admin:
