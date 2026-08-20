@@ -1,9 +1,11 @@
 package net.dvmn2.chatFix;
 
 import io.papermc.paper.event.player.AsyncChatEvent;
+
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
+
 import org.bukkit.Bukkit;
 import org.bukkit.World;
 import org.bukkit.command.CommandSender;
@@ -16,6 +18,18 @@ import org.bukkit.event.Listener;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+/**
+ * Перехватывает и полностью переформатирует сообщения игроков в чате.
+ * <p>
+ * Поддерживает два режима сообщений:
+ * <ul>
+ *     <li>обычное сообщение — уходит только игрокам поблизости (локальный чат);</li>
+ *     <li>сообщение с "!" в начале — уходит всем онлайн-игрокам (глобальный чат).</li>
+ * </ul>
+ * Также поддерживает "скрытые" фрагменты вида {текст}: такие фрагменты
+ * видят только сам отправитель и игроки с правом chatmanager.seehidden,
+ * остальные видят сообщение без этих фрагментов.
+ */
 public class ChatListener implements Listener {
 
     // Ищем фрагменты вида {текст}, без поддержки вложенных скобок
@@ -23,6 +37,10 @@ public class ChatListener implements Listener {
 
     private final ChatDataManager dataManager;
     private final LegacyComponentSerializer legacy = LegacyComponentSerializer.legacyAmpersand();
+
+    /**
+     * Квадрат радиуса локального чата (сравниваем с distanceSquared, чтобы не считать sqrt).
+     */
     private final double localRadiusSquared;
 
     public ChatListener(ChatDataManager dataManager, FileConfiguration config) {
@@ -41,12 +59,15 @@ public class ChatListener implements Listener {
         event.setCancelled(true); // полностью берём обработку сообщения на себя
 
         Player sender = event.getPlayer();
+        // Берём именно plain-text версию сообщения игрока, игнорируя возможное
+        // форматирование, которое клиент/другие плагины могли уже добавить.
         String rawMessage = PlainTextComponentSerializer.plainText().serialize(event.message());
 
         if (rawMessage.isEmpty()) {
             return;
         }
 
+        // Сообщение, начинающееся с "!", считается глобальным, символ "!" отбрасывается
         boolean isGlobal = rawMessage.charAt(0) == '!';
         String text = isGlobal ? rawMessage.substring(1) : rawMessage;
 
@@ -61,6 +82,11 @@ public class ChatListener implements Listener {
         }
     }
 
+    /**
+     * Отправляет сообщение только игрокам в радиусе {@link #localRadiusSquared}
+     * от отправителя (в пределах того же мира). Сам отправитель и админы
+     * (с правом seehidden) видят версию со скрытыми фрагментами.
+     */
     private void sendLocalMessage(Player sender, String text) {
         String prefix = dataManager.getLocalPrefix(sender.getUniqueId());
         String postfix = dataManager.getLocalPostfix(sender.getUniqueId());
@@ -75,12 +101,18 @@ public class ChatListener implements Listener {
                 if (isAdmin(viewer) || viewer == sender) {
                     viewer.sendMessage(adminFormatted);
                 } else if (!parsed.publicText().isEmpty()) {
+                    // не шлём пустое сообщение, если после вырезания скрытых
+                    // фрагментов от текста ничего не осталось
                     viewer.sendMessage(publicFormatted);
                 }
             }
         }
     }
 
+    /**
+     * Отправляет сообщение всем игрокам на сервере, вне зависимости от мира
+     * и расстояния. Отправитель и админы видят версию со скрытыми фрагментами.
+     */
     private void sendGlobalMessage(Player sender, String text) {
         String prefix = dataManager.getGlobalPrefix(sender.getUniqueId());
         String postfix = dataManager.getGlobalPostfix(sender.getUniqueId());
@@ -98,15 +130,23 @@ public class ChatListener implements Listener {
         }
     }
 
-    // Считаем получателя "админом" (видящим скрытые фрагменты), если у него есть доступ.
+    /**
+     * Считаем получателя "админом" (видящим скрытые фрагменты), если у него
+     * есть право chatmanager.seehidden. Не-игроки (консоль и т.п.) считаются
+     * админами по умолчанию.
+     */
     private boolean isAdmin(CommandSender viewer) {
         if (viewer instanceof Player player) {
-            return viewer.hasPermission("chatmanager.seehidden");
+            return player.hasPermission("chatmanager.seehidden");
         }
-        return true; // Считаем кб админом
+        return true; // консоль/не-игрок — считаем админом
     }
 
-    // Разбирает сообщение на "публичную" версию (без содержимого {}) и "админскую".
+    /**
+     * Разбирает сообщение на "публичную" версию (фигурные скобки и их
+     * содержимое полностью вырезаны) и "админскую" (фигурные скобки остаются
+     * как есть, видимыми).
+     */
     private ParsedMessage parseHiddenSegments(String text) {
         Matcher matcher = HIDDEN_PATTERN.matcher(text);
 
@@ -134,10 +174,15 @@ public class ChatListener implements Listener {
         return new ParsedMessage(publicText, adminText);
     }
 
+    /**
+     * Результат разбора сообщения на публичную и админскую версии.
+     */
     private record ParsedMessage(String publicText, String adminText) {
     }
 
-    // Формат: [prefix] сообщение [postfix]
+    /**
+     * Формат итогового сообщения: [prefix] текст [postfix], с легаси-цветовыми кодами (&).
+     */
     private Component buildMessage(String prefix, String text, String postfix) {
         StringBuilder sb = new StringBuilder();
         if (!prefix.isEmpty()) sb.append(prefix);

@@ -14,20 +14,44 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.locks.ReentrantLock;
 
+/**
+ * Отвечает за хранение и персистентность данных плагина (chatdata.yml):
+ * префиксы/постфиксы игроков (локальные и глобальные) и кэш "имя -> UUID"
+ * для быстрого разрешения ников в командах.
+ * <p>
+ * Все операции чтения/записи конфигурации защищены {@link ReentrantLock},
+ * т.к. plugin работает в многопоточной среде Bukkit/Paper (события чата
+ * могут прилетать асинхронно, а команды и сохранение на диск — из разных
+ * потоков планировщика).
+ */
 public class ChatDataManager {
 
-    // debounce: если правки идут пачкой (например, несколько setPrefix подряd),
+    // debounce: если правки идут пачкой (например, несколько setPrefix подряд),
     // не пишем файл на каждый вызов, а откладываем на N тиков
     private static final long SAVE_DELAY_TICKS = 20L; // 1 секунда
 
+    /**
+     * Кэш "ник в нижнем регистре -> UUID" для быстрого resolve без похода в конфиг.
+     */
     private final Map<String, UUID> nameToUuid = new HashMap<>();
+
+    /**
+     * Общая блокировка на все операции с {@link #config} и {@link #nameToUuid}.
+     */
     private final ReentrantLock lock = new ReentrantLock();
 
     private final JavaPlugin plugin;
     private final File file;
     private FileConfiguration config;
 
+    /**
+     * true, если в конфиге есть несохранённые изменения.
+     */
     private volatile boolean dirty = false;
+
+    /**
+     * Задача отложенного сохранения, если она уже запланирована (иначе null).
+     */
     private BukkitTask pendingSaveTask;
 
     public ChatDataManager(JavaPlugin plugin) {
@@ -36,6 +60,10 @@ public class ChatDataManager {
         load();
     }
 
+    /**
+     * Загружает chatdata.yml с диска (создавая файл/папку плагина при
+     * необходимости) и перестраивает кэш имён.
+     */
     public void load() {
         lock.lock();
         try {
@@ -98,12 +126,17 @@ public class ChatDataManager {
 
     /**
      * Синхронный принудительный сброс — использовать в onDisable().
+     * Форсирует dirty=true, чтобы flush() гарантированно записал файл,
+     * даже если формально ничего не менялось с последнего сохранения.
      */
     public void forceSaveSync() {
         dirty = true;
         flush();
     }
 
+    /**
+     * Строит путь в YAML вида players.<uuid>.<key>.
+     */
     private String path(UUID uuid, String key) {
         return "players." + uuid + "." + key;
     }
@@ -193,6 +226,12 @@ public class ChatDataManager {
         scheduleSave();
     }
 
+    /**
+     * Регистрирует/обновляет связь UUID <-> ник (вызывается при заходе игрока).
+     * Обновляет кэш всегда (на случай, если сервер перезапущен и ник у того же
+     * UUID сменился), но пишет на диск только если имя реально изменилось —
+     * чтобы не дёргать сохранение на каждый вход одного и того же игрока.
+     */
     public void registerName(UUID uuid, String name) {
         lock.lock();
         try {
@@ -210,6 +249,13 @@ public class ChatDataManager {
         scheduleSave();
     }
 
+    /**
+     * Пытается разрешить ник в UUID по кэшу (регистр не важен).
+     *
+     * @return UUID игрока или {@code null}, если ник не встречался
+     * (например, игрок ни разу не заходил на сервер с момента
+     * последней перезагрузки кэша).
+     */
     public UUID resolveUuid(String name) {
         lock.lock();
         try {
@@ -219,6 +265,9 @@ public class ChatDataManager {
         }
     }
 
+    /**
+     * Перестраивает {@link #nameToUuid} из секции players конфига.
+     */
     private void loadNameCache() {
         nameToUuid.clear();
 

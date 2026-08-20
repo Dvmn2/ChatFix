@@ -7,26 +7,32 @@ import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import com.mojang.brigadier.suggestion.Suggestions;
 import com.mojang.brigadier.suggestion.SuggestionsBuilder;
 import com.mojang.brigadier.tree.LiteralCommandNode;
+
 import io.papermc.paper.command.brigadier.CommandSourceStack;
 import io.papermc.paper.command.brigadier.Commands;
 import io.papermc.paper.command.brigadier.argument.ArgumentTypes;
 import io.papermc.paper.command.brigadier.argument.resolvers.selector.PlayerSelectorArgumentResolver;
+
 import org.bukkit.ChatColor;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.util.List;
-import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
 /**
- * /chatfix <ник> <local|global> <prefix|postfix> <текст...>
+ * Команда /chatfix <targets> <local|global> <prefix|postfix> <текст...>
  * <p>
  * Примеры:
- * /chatfix local prefix Steve &7[Локальный]
- * /chatfix local postfix Steve &7[/Локальный]
- * /chatfix global prefix Steve &c[Глобал]
+ * /chatfix Steve local prefix &amp;7[Локальный]
+ * /chatfix Steve local postfix &amp;7[/Локальный]
+ * /chatfix Steve global prefix &amp;c[Глобал]
+ * <p>
+ * Targets задаётся через стандартный Brigadier-селектор игроков
+ * ({@link ArgumentTypes#players()}), поэтому поддерживает как одиночные
+ * ники, так и селекторы вида @a, @r и т.п. — resolver отдаёт список уже
+ * подключённых {@link Player}, у которых сразу есть валидный UUID.
  */
 public class ChatFixCommand {
 
@@ -42,7 +48,7 @@ public class ChatFixCommand {
     }
 
     /**
-     * Собирает дерево Brigadier-команды. Регистрируется в Scanner#onEnable через
+     * Собирает дерево Brigadier-команды. Регистрируется в ChatFix#onEnable через
      * getLifecycleManager().registerEventHandler(LifecycleEvents.COMMANDS, ...).
      */
     public LiteralCommandNode<CommandSourceStack> create() {
@@ -83,8 +89,8 @@ public class ChatFixCommand {
         }
 
         for (Player player : players) {
+            java.util.UUID targetUuid = player.getUniqueId();
             String targetName = player.getName();
-            UUID targetUuid = dataManager.resolveUuid(targetName);
 
             switch (mode) {
                 case "local" -> {
@@ -109,6 +115,9 @@ public class ChatFixCommand {
         return Command.SINGLE_SUCCESS;
     }
 
+    /**
+     * Фильтрует варианты автодополнения по уже введённому пользователем префиксу.
+     */
     private CompletableFuture<Suggestions> suggest(SuggestionsBuilder builder, String... options) {
         String remaining = builder.getRemaining().toLowerCase();
         for (String option : options) {
