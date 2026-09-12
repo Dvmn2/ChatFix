@@ -1,5 +1,11 @@
 settings:
   enabled: true
   message: "Config enabled!"
-  # Радиус (в блоках) в котором видно локальные сообщения
+  # Радиус (в блоках), в котором видно локальные сообщения.
+  # Меняется командой /chatfix radius <значение>
   local-chat-radius: 15.0
+  # Включён ли глобальный чат ("!сообщение").
+  # Меняется командой /chatfix globalchat <on|off>
+  global-chat-enabled: true
+  # Язык сообщений плагина: ru, en или auto (по локали игрока)
+  language: auto

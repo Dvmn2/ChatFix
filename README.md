@@ -1,83 +1,87 @@
 # ChatFix
 
-Плагин для Paper/Spigot, который переформатирует чат игроков и позволяет операторам
-задавать индивидуальные префиксы/постфиксы для локального и глобального чата.
+A Paper plugin that replaces the default chat handling and gives operators control over per-player prefixes and
+postfixes, local/global chat separation, and hidden message segments.
 
-## Возможности
+## Requirements
 
-- **Локальный чат** — обычное сообщение видят только игроки в радиусе
-  `local-chat-radius` блоков от отправителя (в том же мире).
-- **Глобальный чат** — сообщение, начинающееся с `!`, отправляется всем
-  игрокам на сервере, независимо от мира и расстояния.
-- **Скрытые фрагменты** — часть сообщения, обёрнутая в `{фигурные скобки}`,
-  видна только самому отправителю и игрокам с правом `chatmanager.seehidden`.
-  Остальные видят сообщение без этих фрагментов (и без сообщения вовсе, если
-  после вырезания ничего не осталось).
-- **Индивидуальные префиксы/постфиксы** — отдельно для локального и глобального
-  режима, задаются командой `/chatfix` и поддерживают легаси-цветовые коды (`&`).
-- **Персистентное хранение** — данные игроков (префиксы, постфиксы, кэш ник↔UUID)
-  сохраняются в `chatdata.yml` с отложенным (debounce) асинхронным сохранением
-  и принудительным синхронным сохранением при выключении сервера.
+- Paper 1.21 or compatible fork
+- Java 17+
 
-## Команда
+## Features
 
-```
-/chatfix <targets> <local|global> <prefix|postfix> <текст>
-```
+### Local and global chat
 
-- `targets` — стандартный Brigadier-селектор игроков (ник, `@a`, `@r` и т.п.).
-- `local|global` — какой режим чата настраивается.
-- `prefix|postfix` — что именно задаётся: текст перед сообщением или после него.
-- `текст` — содержимое префикса/постфикса (поддерживает `&`-цветовые коды).
+Messages are local by default: they are delivered only to players in the same world within a configurable radius.
+Prefixing a message with `!` sends it as a global message to every online player, regardless of world or distance.
+Global chat can be disabled by an administrator; while disabled, players attempting to use `!` receive a notice and the
+message is not sent.
 
-Примеры:
+### Hidden segments
 
-```
-/chatfix Steve local prefix &7[Локальный]
-/chatfix Steve local postfix &7[/Локальный]
-/chatfix Steve global prefix &c[Глобал]
-```
+Any part of a message wrapped in curly braces, e.g. `{secret}`, is removed for regular players but shown as-is to the
+sender and to players with the `chatmanager.seehidden` permission. If removing hidden segments leaves no visible text,
+regular players do not receive the message at all.
 
-Требует права `chatmanager.admin`.
+### Per-player prefix/postfix
 
-## Права доступа
+Administrators can set a prefix and a postfix per player, independently for local and global chat. Values support `&`
+-based color codes and are stored persistently in `chatdata.yml`, keyed by player UUID.
 
-| Право                     | Описание                                              | По умолчанию |
-|---------------------------|--------------------------------------------------------|--------------|
-| `chatmanager.admin`       | Доступ к команде `/chatfix`                            | op           |
-| `chatmanager.seehidden`   | Позволяет видеть скрытые фрагменты сообщений `{...}`   | op           |
+### Localization
 
-## Конфигурация (`config.yml`)
+Plugin messages are available in Russian and English. The language is set in `config.yml`:
+
+- `en` — English
+- `ru` — Russian
+- `auto` (default) — resolved from the receiving player's client locale; non-player senders (console) get English
+
+## Commands
+
+All commands require the `chatmanager.admin` permission.
+
+| Command                                                              | Description                                                                                                                                                                   |
+|----------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `/chatfix set <targets> <local\|global> <prefix\|postfix> <text>`    | Sets a prefix or postfix for one or more online players, selected via a standard player selector.                                                                             |
+| `/chatfix offline <target> <local\|global> <prefix\|postfix> <text>` | Sets a prefix or postfix for a player by name. The player does not need to be online: the name is resolved from the local cache first, then from the Mojang API if not found. |
+| `/chatfix radius <value>`                                            | Sets the local chat radius, in blocks.                                                                                                                                        |
+| `/chatfix globalchat <on\|off>`                                      | Enables or disables global chat.                                                                                                                                              |
+
+Enclose `<text>` in quotes if it contains spaces.
+
+## Permissions
+
+| Permission              | Description                                                           | Default |
+|-------------------------|-----------------------------------------------------------------------|---------|
+| `chatmanager.admin`     | Access to `/chatfix` (prefixes/postfixes, radius, global chat toggle) | op      |
+| `chatmanager.seehidden` | View hidden `{segments}` in chat                                      | op      |
+
+## Configuration
+
+`config.yml`:
 
 ```yaml
 settings:
-  enabled: true
-  message: "Config enabled!"
-  # Радиус (в блоках), в котором видно локальные сообщения
+  # Radius, in blocks, within which local messages are visible.
+  # Changed with /chatfix radius <value>
   local-chat-radius: 15.0
+  # Whether global chat ("!message") is enabled.
+  # Changed with /chatfix globalchat <on|off>
+  global-chat-enabled: true
+  # Plugin message language: en, ru, or auto (based on player locale)
+  language: auto
 ```
 
-## Хранение данных
+`local-chat-radius` and `global-chat-enabled` are also updated at runtime by the corresponding commands and persisted
+back to this file.
 
-Данные игроков хранятся в `plugins/ChatFix/chatdata.yml` по пути
-`players.<uuid>.<ключ>`, где `<ключ>` — один из:
+## Data storage
 
-- `local-prefix`, `local-postfix`
-- `global-prefix`, `global-postfix`
-- `name` — последний известный ник (используется для резолва офлайн-игроков)
+Player prefixes, postfixes, and the name-to-UUID cache are stored in `chatdata.yml` inside the plugin's data folder.
+Writes are debounced (one write per second of activity) and are flushed synchronously on server shutdown.
 
-## Требования
+## Installation
 
-- Paper (использует Brigadier-команды через `LifecycleEvents.COMMANDS` и
-  `io.papermc.paper.event.player.AsyncChatEvent`, поэтому на чистом Spigot
-  работать не будет).
-- `api-version: '1.21.11'`
-
-## Установка
-
-1. Соберите или скачайте `.jar`-файл плагина.
-2. Поместите его в папку `plugins/` вашего сервера.
-3. Перезапустите сервер — будет создан `plugins/ChatFix/config.yml` и
-   `plugins/ChatFix/chatdata.yml`.
-4. Настройте `local-chat-radius` при необходимости и выдайте права
-   `chatmanager.admin` / `chatmanager.seehidden` нужным игрокам.
+1. Place the plugin jar in the server's `plugins` folder.
+2. Start the server once to generate `config.yml`.
+3. Adjust `config.yml` as needed and reload or restart the server.

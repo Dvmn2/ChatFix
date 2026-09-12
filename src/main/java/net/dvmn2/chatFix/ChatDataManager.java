@@ -9,49 +9,41 @@ import org.bukkit.scheduler.BukkitTask;
 
 import java.io.File;
 import java.io.IOException;
+import java.net.URI;
+import java.net.URLEncoder;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
- * Отвечает за хранение и персистентность данных плагина (chatdata.yml):
- * префиксы/постфиксы игроков (локальные и глобальные) и кэш "имя -> UUID"
- * для быстрого разрешения ников в командах.
- * <p>
- * Все операции чтения/записи конфигурации защищены {@link ReentrantLock},
- * т.к. plugin работает в многопоточной среде Bukkit/Paper (события чата
- * могут прилетать асинхронно, а команды и сохранение на диск — из разных
- * потоков планировщика).
+ * Хранение и персистентность данных плагина (chatdata.yml): префиксы/постфиксы
+ * игроков и кэш "ник -> UUID". Все операции защищены {@link ReentrantLock},
+ * т.к. вызываются как из основного потока (команды), так и из async
+ * (обработка чата, сохранение на диск, обращение к Mojang API).
  */
 public class ChatDataManager {
 
-    // debounce: если правки идут пачкой (например, несколько setPrefix подряд),
-    // не пишем файл на каждый вызов, а откладываем на N тиков
-    private static final long SAVE_DELAY_TICKS = 20L; // 1 секунда
+    private static final long SAVE_DELAY_TICKS = 20L; // debounce: не пишем файл на каждое изменение
+    private static final Pattern VALID_NAME = Pattern.compile("^[A-Za-z0-9_]{1,16}$");
+    private static final Pattern MOJANG_ID = Pattern.compile("\"id\"\\s*:\\s*\"([0-9a-fA-F]{32})\"");
+    private static final Pattern MOJANG_NAME = Pattern.compile("\"name\"\\s*:\\s*\"([^\"]+)\"");
 
-    /**
-     * Кэш "ник в нижнем регистре -> UUID" для быстрого resolve без похода в конфиг.
-     */
     private final Map<String, UUID> nameToUuid = new HashMap<>();
-
-    /**
-     * Общая блокировка на все операции с {@link #config} и {@link #nameToUuid}.
-     */
     private final ReentrantLock lock = new ReentrantLock();
 
     private final JavaPlugin plugin;
     private final File file;
     private FileConfiguration config;
 
-    /**
-     * true, если в конфиге есть несохранённые изменения.
-     */
     private volatile boolean dirty = false;
-
-    /**
-     * Задача отложенного сохранения, если она уже запланирована (иначе null).
-     */
     private BukkitTask pendingSaveTask;
 
     public ChatDataManager(JavaPlugin plugin) {
@@ -60,10 +52,6 @@ public class ChatDataManager {
         load();
     }
 
-    /**
-     * Загружает chatdata.yml с диска (создавая файл/папку плагина при
-     * необходимости) и перестраивает кэш имён.
-     */
     public void load() {
         lock.lock();
         try {
@@ -83,24 +71,23 @@ public class ChatDataManager {
     }
 
     /**
-     * Планирует отложенное асинхронное сохранение. Если уже запланировано —
-     * не создаёт новую задачу, просто выставляет dirty (следующее сохранение
-     * заберёт актуальные данные, т.к. пишем снапшот конфига в момент запуска задачи).
+     * Планирует отложенное сохранение. Проверка/установка pendingSaveTask
+     * идёт под тем же lock'ом, что и flush() — иначе два потока (async-чат
+     * и join-событие) могут одновременно запланировать по задаче сохранения.
      */
     private void scheduleSave() {
-        dirty = true;
-        if (pendingSaveTask != null) {
-            return; // сохранение уже запланировано, ждём его
+        lock.lock();
+        try {
+            dirty = true;
+            if (pendingSaveTask != null) {
+                return;
+            }
+            pendingSaveTask = Bukkit.getScheduler().runTaskLaterAsynchronously(plugin, this::flush, SAVE_DELAY_TICKS);
+        } finally {
+            lock.unlock();
         }
-        pendingSaveTask = Bukkit.getScheduler().runTaskLaterAsynchronously(plugin, () -> {
-            flush();
-        }, SAVE_DELAY_TICKS);
     }
 
-    /**
-     * Физически пишет config на диск. Можно вызывать и синхронно (например, в onDisable),
-     * и из async-задачи.
-     */
     public void flush() {
         YamlConfiguration snapshot;
         lock.lock();
@@ -110,7 +97,6 @@ public class ChatDataManager {
                 return;
             }
             dirty = false;
-            // сохраняем снапшот, чтобы writeToFile не держал lock во время I/O
             snapshot = YamlConfiguration.loadConfiguration(
                     new java.io.StringReader(config.saveToString()));
         } finally {
@@ -125,18 +111,19 @@ public class ChatDataManager {
     }
 
     /**
-     * Синхронный принудительный сброс — использовать в onDisable().
-     * Форсирует dirty=true, чтобы flush() гарантированно записал файл,
-     * даже если формально ничего не менялось с последнего сохранения.
+     * Используется в onDisable() — форсирует запись, даже если формально
+     * ничего не поменялось с последнего сохранения.
      */
     public void forceSaveSync() {
-        dirty = true;
+        lock.lock();
+        try {
+            dirty = true;
+        } finally {
+            lock.unlock();
+        }
         flush();
     }
 
-    /**
-     * Строит путь в YAML вида players.<uuid>.<key>.
-     */
     private String path(UUID uuid, String key) {
         return "players." + uuid + "." + key;
     }
@@ -227,21 +214,18 @@ public class ChatDataManager {
     }
 
     /**
-     * Регистрирует/обновляет связь UUID <-> ник (вызывается при заходе игрока).
-     * Обновляет кэш всегда (на случай, если сервер перезапущен и ник у того же
-     * UUID сменился), но пишет на диск только если имя реально изменилось —
-     * чтобы не дёргать сохранение на каждый вход одного и того же игрока.
+     * Регистрирует/обновляет связь UUID <-> ник (вызывается при заходе игрока
+     * и при добавлении нового игрока через Mojang API). На диск пишет только
+     * если имя реально изменилось.
      */
     public void registerName(UUID uuid, String name) {
         lock.lock();
         try {
             String existing = config.getString(path(uuid, "name"));
+            nameToUuid.put(name.toLowerCase(), uuid);
             if (name.equals(existing)) {
-                // ничего не поменялось — не дёргаем сохранение зря
-                nameToUuid.put(name.toLowerCase(), uuid);
                 return;
             }
-            nameToUuid.put(name.toLowerCase(), uuid);
             config.set(path(uuid, "name"), name);
         } finally {
             lock.unlock();
@@ -250,11 +234,8 @@ public class ChatDataManager {
     }
 
     /**
-     * Пытается разрешить ник в UUID по кэшу (регистр не важен).
-     *
-     * @return UUID игрока или {@code null}, если ник не встречался
-     * (например, игрок ни разу не заходил на сервер с момента
-     * последней перезагрузки кэша).
+     * Поиск UUID только по локальному кэшу (chatdata.yml). Ничего не грузит
+     * из сети. {@code null}, если игрок ещё не встречался.
      */
     public UUID resolveUuid(String name) {
         lock.lock();
@@ -266,8 +247,58 @@ public class ChatDataManager {
     }
 
     /**
-     * Перестраивает {@link #nameToUuid} из секции players конфига.
+     * Обращается к Mojang API за UUID игрока, которого нет в chatdata.yml,
+     * и сразу регистрирует найденную пару ник/UUID в файле. Выполняет
+     * блокирующий HTTP-запрос — вызывать только из async-задачи.
+     *
+     * @return UUID найденного игрока или {@code null}, если такого ника
+     * никогда не существовало / Mojang недоступен.
      */
+    public UUID fetchAndRegisterFromMojang(String name) {
+        if (!VALID_NAME.matcher(name).matches()) {
+            return null;
+        }
+        try {
+            HttpClient client = HttpClient.newHttpClient();
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create("https://api.mojang.com/users/profiles/minecraft/"
+                            + URLEncoder.encode(name, StandardCharsets.UTF_8)))
+                    .timeout(Duration.ofSeconds(5))
+                    .GET()
+                    .build();
+            HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() != 200) {
+                return null; // 204/404 — такого ника не существует
+            }
+
+            String body = response.body();
+            Matcher idMatcher = MOJANG_ID.matcher(body);
+            Matcher nameMatcher = MOJANG_NAME.matcher(body);
+            if (!idMatcher.find() || !nameMatcher.find()) {
+                plugin.getLogger().warning("Неожиданный ответ Mojang API для '" + name + "': " + body);
+                return null;
+            }
+
+            UUID uuid = parseUndashedUuid(idMatcher.group(1));
+            String correctName = nameMatcher.group(1);
+            registerName(uuid, correctName);
+            return uuid;
+        } catch (IOException e) {
+            plugin.getLogger().warning("Не удалось обратиться к Mojang API: " + e.getMessage());
+            return null;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return null;
+        }
+    }
+
+    private static UUID parseUndashedUuid(String raw) {
+        String dashed = raw.replaceFirst(
+                "(\\w{8})(\\w{4})(\\w{4})(\\w{4})(\\w{12})",
+                "$1-$2-$3-$4-$5");
+        return UUID.fromString(dashed);
+    }
+
     private void loadNameCache() {
         nameToUuid.clear();
 
@@ -282,8 +313,7 @@ public class ChatDataManager {
                 continue;
             }
             try {
-                UUID uuid = UUID.fromString(uuidKey);
-                nameToUuid.put(name.toLowerCase(), uuid);
+                nameToUuid.put(name.toLowerCase(), UUID.fromString(uuidKey));
             } catch (IllegalArgumentException e) {
                 plugin.getLogger().warning("Некорректный UUID в chatdata.yml: " + uuidKey);
             }

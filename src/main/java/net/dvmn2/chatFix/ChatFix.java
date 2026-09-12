@@ -10,37 +10,27 @@ import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.plugin.java.JavaPlugin;
 
 /**
- * Главный класс плагина ChatFix.
- * <p>
- * Отвечает за жизненный цикл плагина: инициализацию {@link ChatDataManager},
- * регистрацию слушателей событий и команды /chatfix, а также корректное
- * сохранение данных при выключении сервера.
+ * Главный класс плагина: жизненный цикл, регистрация слушателей/команды,
+ * сохранение данных при выключении.
  */
 public final class ChatFix extends JavaPlugin implements Listener {
 
-    // Создаётся сразу в поле, а не в onEnable(), т.к. ChatDataManager сам
-    // грузит данные с диска в конструкторе и не зависит от других частей плагина.
     private final ChatDataManager chatDataManager = new ChatDataManager(this);
 
     @Override
     public void onEnable() {
-        // Сохранение конфигурации по умолчанию (если есть config.yml)
         saveDefaultConfig();
 
-        // Регистрация слушателей событий:
-        // - this (ChatFix) слушает PlayerJoinEvent, чтобы регистрировать ник/UUID
-        // - ChatListener обрабатывает и форматирует сообщения в чате
-        getServer().getPluginManager().registerEvents(this, this);
-        ChatFixCommand chatFixCommand = new ChatFixCommand(this, chatDataManager);
-        getServer().getPluginManager().registerEvents(new ChatListener(chatDataManager, getConfig()), this);
+        ChatSettings settings = new ChatSettings(this);
+        Lang.setLanguage(getConfig().getString("settings.language", "auto"));
 
-        // Регистрация Brigadier-команды /chatfix через новый lifecycle API Paper.
+        getServer().getPluginManager().registerEvents(this, this);
+        getServer().getPluginManager().registerEvents(new ChatListener(chatDataManager, settings), this);
+
+        ChatFixCommand chatFixCommand = new ChatFixCommand(this, chatDataManager, settings);
         this.getLifecycleManager().registerEventHandler(LifecycleEvents.COMMANDS, event -> {
             Commands commands = event.registrar();
-            commands.register(
-                    chatFixCommand.create(),
-                    "Меняет фиксы игроков"
-            );
+            commands.register(chatFixCommand.create(), "Меняет фиксы игроков и настройки чата");
         });
 
         getLogger().info("ChatFix enabled!");
@@ -48,16 +38,14 @@ public final class ChatFix extends JavaPlugin implements Listener {
 
     @Override
     public void onDisable() {
-        // Принудительно и синхронно сбрасываем данные на диск перед выключением,
-        // т.к. асинхронная отложенная задача сохранения могла не успеть сработать.
+        // Форсируем синхронную запись — отложенная async-задача могла не успеть сработать.
         chatDataManager.forceSaveSync();
         getLogger().info("ChatFix disabled!");
     }
 
     /**
-     * При каждом входе игрока обновляем/создаём связь его ника с UUID,
-     * чтобы команда /chatfix могла резолвить офлайн-игроков и чтобы
-     * кэш имён не устаревал после смены ника.
+     * При каждом входе обновляем связь ник <-> UUID, чтобы /chatfix мог
+     * резолвить офлайн-игроков и чтобы кэш не устаревал после смены ника.
      */
     @EventHandler
     public void onJoin(PlayerJoinEvent event) {
