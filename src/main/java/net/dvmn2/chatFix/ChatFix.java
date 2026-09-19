@@ -27,7 +27,7 @@ public final class ChatFix extends JavaPlugin implements Listener {
         getServer().getPluginManager().registerEvents(this, this);
         getServer().getPluginManager().registerEvents(new ChatListener(chatDataManager, settings), this);
 
-        ChatFixCommand chatFixCommand = new ChatFixCommand(this, chatDataManager, settings);
+        ChatFixCommand chatFixCommand = new ChatFixCommand(chatDataManager, settings);
         this.getLifecycleManager().registerEventHandler(LifecycleEvents.COMMANDS, event -> {
             Commands commands = event.registrar();
             commands.register(chatFixCommand.create(), "Меняет фиксы игроков и настройки чата");
@@ -44,8 +44,10 @@ public final class ChatFix extends JavaPlugin implements Listener {
     }
 
     /**
-     * При каждом входе обновляем связь ник <-> UUID, чтобы /chatfix мог
-     * резолвить офлайн-игроков и чтобы кэш не устаревал после смены ника.
+     * При каждом входе обновляем связь ник <-> UUID: так /chatfix резолвит
+     * офлайн-игроков, кэш не устаревает после смены ника, а данные, выданные
+     * через "/chatfix offline" до первого входа (offline-players), переносятся
+     * под UUID игрока (players).
      */
     @EventHandler
     public void onJoin(PlayerJoinEvent event) {

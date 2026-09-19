@@ -9,32 +9,45 @@ import org.bukkit.scheduler.BukkitTask;
 
 import java.io.File;
 import java.io.IOException;
-import java.net.URI;
-import java.net.URLEncoder;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.nio.charset.StandardCharsets;
-import java.time.Duration;
+import java.io.StringReader;
 import java.util.HashMap;
+import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.locks.ReentrantLock;
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Хранение и персистентность данных плагина (chatdata.yml): префиксы/постфиксы
- * игроков и кэш "ник -> UUID". Все операции защищены {@link ReentrantLock},
- * т.к. вызываются как из основного потока (команды), так и из async
- * (обработка чата, сохранение на диск, обращение к Mojang API).
+ * Хранение и персистентность данных плагина (chatdata.yml).
+ * <ul>
+ *   <li>{@code players.<uuid>} — данные игроков, заходивших на сервер:
+ *       ник, префиксы/постфиксы, индивидуальные настройки чата;</li>
+ *   <li>{@code offline-players.<ник>} — данные игроков, которым фиксы выдали
+ *       через /chatfix offline, но которые ещё ни разу не заходили. При первом
+ *       входе запись переносится в {@code players.<uuid>} (см. {@link #registerName}).</li>
+ * </ul>
+ * Все операции защищены {@link ReentrantLock}, т.к. вызываются как из основного
+ * потока (команды), так и из async (обработка чата, сохранение на диск).
  */
 public class ChatDataManager {
 
     private static final long SAVE_DELAY_TICKS = 20L; // debounce: не пишем файл на каждое изменение
     private static final Pattern VALID_NAME = Pattern.compile("^[A-Za-z0-9_]{1,16}$");
-    private static final Pattern MOJANG_ID = Pattern.compile("\"id\"\\s*:\\s*\"([0-9a-fA-F]{32})\"");
-    private static final Pattern MOJANG_NAME = Pattern.compile("\"name\"\\s*:\\s*\"([^\"]+)\"");
+    private static final String PLAYERS_ROOT = "players";
+    private static final String OFFLINE_ROOT = "offline-players";
+
+    /**
+     * Снимок данных игрока для одного режима чата. {@code null} в поле значит
+     * "не задано":
+     * <ul>
+     *   <li>prefix/postfix — не задан (для префикса применяется стандартный "Ник: ").
+     *       Пустая строка — заданное значение "без префикса";</li>
+     *   <li>enabled/radius — нет индивидуального значения, берётся общая настройка.</li>
+     * </ul>
+     */
+    public record ChatProfile(String prefix, String postfix, Boolean enabled, Double radius) {
+        public static final ChatProfile EMPTY = new ChatProfile(null, null, null, null);
+    }
 
     private final Map<String, UUID> nameToUuid = new HashMap<>();
     private final ReentrantLock lock = new ReentrantLock();
@@ -50,6 +63,10 @@ public class ChatDataManager {
         this.plugin = plugin;
         this.file = new File(plugin.getDataFolder(), "chatdata.yml");
         load();
+    }
+
+    public static boolean isValidName(String name) {
+        return VALID_NAME.matcher(name).matches();
     }
 
     public void load() {
@@ -98,7 +115,7 @@ public class ChatDataManager {
             }
             dirty = false;
             snapshot = YamlConfiguration.loadConfiguration(
-                    new java.io.StringReader(config.saveToString()));
+                    new StringReader(config.saveToString()));
         } finally {
             lock.unlock();
         }
@@ -125,43 +142,7 @@ public class ChatDataManager {
     }
 
     private String path(UUID uuid, String key) {
-        return "players." + uuid + "." + key;
-    }
-
-    public String getLocalPrefix(UUID uuid) {
-        lock.lock();
-        try {
-            return config.getString(path(uuid, "local-prefix"), "");
-        } finally {
-            lock.unlock();
-        }
-    }
-
-    public String getLocalPostfix(UUID uuid) {
-        lock.lock();
-        try {
-            return config.getString(path(uuid, "local-postfix"), "");
-        } finally {
-            lock.unlock();
-        }
-    }
-
-    public String getGlobalPrefix(UUID uuid) {
-        lock.lock();
-        try {
-            return config.getString(path(uuid, "global-prefix"), "");
-        } finally {
-            lock.unlock();
-        }
-    }
-
-    public String getGlobalPostfix(UUID uuid) {
-        lock.lock();
-        try {
-            return config.getString(path(uuid, "global-postfix"), "");
-        } finally {
-            lock.unlock();
-        }
+        return PLAYERS_ROOT + "." + uuid + "." + key;
     }
 
     public String getName(UUID uuid) {
@@ -173,40 +154,65 @@ public class ChatDataManager {
         }
     }
 
-    public void setLocalPrefix(UUID uuid, String value) {
+    /**
+     * Читает все нужные для одного сообщения значения за один захват lock'а.
+     */
+    public ChatProfile getProfile(UUID uuid, ChatMode mode) {
         lock.lock();
         try {
-            config.set(path(uuid, "local-prefix"), value);
+            ConfigurationSection section = config.getConfigurationSection(PLAYERS_ROOT + "." + uuid);
+            if (section == null) {
+                return ChatProfile.EMPTY;
+            }
+
+            String prefix = section.getString(mode.prefixKey());   // null, если ключа нет
+            String postfix = section.getString(mode.postfixKey());
+
+            Boolean enabled = null;
+            if (section.getBoolean(mode.customModeKey(), false) && section.contains(mode.enabledKey())) {
+                enabled = section.getBoolean(mode.enabledKey());
+            }
+
+            Double radius = null;
+            if (mode.hasRadius()
+                    && section.getBoolean(mode.customRadiusKey(), false)
+                    && section.contains(mode.radiusKey())) {
+                radius = section.getDouble(mode.radiusKey());
+            }
+
+            return new ChatProfile(prefix, postfix, enabled, radius);
         } finally {
             lock.unlock();
         }
-        scheduleSave();
     }
 
-    public void setLocalPostfix(UUID uuid, String value) {
+    /**
+     * Записывает набор ключей в {@code players.<uuid>}.
+     */
+    public void applyChanges(UUID uuid, Map<String, Object> changes) {
+        applyAt(PLAYERS_ROOT + "." + uuid, changes);
+    }
+
+    /**
+     * Записывает набор ключей в {@code offline-players.<ник>} — для игрока,
+     * который ещё ни разу не заходил. Ник сопоставляется без учёта регистра.
+     */
+    public void applyOfflineChanges(String name, Map<String, Object> changes) {
         lock.lock();
         try {
-            config.set(path(uuid, "local-postfix"), value);
+            String existing = findOfflineKey(name);
+            applyAt(OFFLINE_ROOT + "." + (existing != null ? existing : name), changes);
         } finally {
             lock.unlock();
         }
-        scheduleSave();
     }
 
-    public void setGlobalPrefix(UUID uuid, String value) {
+    private void applyAt(String base, Map<String, Object> changes) {
         lock.lock();
         try {
-            config.set(path(uuid, "global-prefix"), value);
-        } finally {
-            lock.unlock();
-        }
-        scheduleSave();
-    }
-
-    public void setGlobalPostfix(UUID uuid, String value) {
-        lock.lock();
-        try {
-            config.set(path(uuid, "global-postfix"), value);
+            for (Map.Entry<String, Object> change : changes.entrySet()) {
+                config.set(base + "." + change.getKey(), change.getValue());
+            }
         } finally {
             lock.unlock();
         }
@@ -215,94 +221,98 @@ public class ChatDataManager {
 
     /**
      * Регистрирует/обновляет связь UUID <-> ник (вызывается при заходе игрока
-     * и при добавлении нового игрока через Mojang API). На диск пишет только
-     * если имя реально изменилось.
+     * и при выдаче фикса онлайн-игроку). Если для этого ника есть запись в
+     * {@code offline-players} — переносит её в {@code players.<uuid>}.
+     * На диск пишет только если что-то реально изменилось.
      */
     public void registerName(UUID uuid, String name) {
+        boolean changed;
         lock.lock();
         try {
-            String existing = config.getString(path(uuid, "name"));
-            nameToUuid.put(name.toLowerCase(), uuid);
-            if (name.equals(existing)) {
-                return;
+            changed = migrateOfflineEntry(uuid, name);
+
+            // Убираем устаревшие ники этого UUID (после смены ника), чтобы старый
+            // ник не резолвился в игрока и не перекрывал нового владельца ника.
+            String lower = name.toLowerCase(Locale.ROOT);
+            nameToUuid.entrySet().removeIf(e -> e.getValue().equals(uuid) && !e.getKey().equals(lower));
+            nameToUuid.put(lower, uuid);
+
+            if (!name.equals(config.getString(path(uuid, "name")))) {
+                config.set(path(uuid, "name"), name);
+                changed = true;
             }
-            config.set(path(uuid, "name"), name);
         } finally {
             lock.unlock();
         }
-        scheduleSave();
+        if (changed) {
+            scheduleSave();
+        }
     }
 
     /**
-     * Поиск UUID только по локальному кэшу (chatdata.yml). Ничего не грузит
-     * из сети. {@code null}, если игрок ещё не встречался.
+     * Переносит {@code offline-players.<ник>} в {@code players.<uuid>}.
+     * Значения из offline-записи перезаписывают одноимённые ключи игрока — они
+     * были заданы администратором явно. Вызывать под lock'ом.
+     *
+     * @return {@code true}, если запись была найдена и перенесена
+     */
+    private boolean migrateOfflineEntry(UUID uuid, String name) {
+        ConfigurationSection offline = config.getConfigurationSection(OFFLINE_ROOT);
+        if (offline == null) {
+            return false;
+        }
+        String key = findKeyIgnoreCase(offline, name);
+        if (key == null) {
+            return false;
+        }
+
+        ConfigurationSection entry = offline.getConfigurationSection(key);
+        if (entry != null) {
+            for (Map.Entry<String, Object> value : entry.getValues(false).entrySet()) {
+                config.set(path(uuid, value.getKey()), value.getValue());
+            }
+        }
+
+        offline.set(key, null);
+        if (offline.getKeys(false).isEmpty()) {
+            config.set(OFFLINE_ROOT, null); // не оставляем пустую секцию в файле
+        }
+
+        plugin.getLogger().info("Данные игрока " + name + " перенесены из offline-players в players." + uuid);
+        return true;
+    }
+
+    private String findOfflineKey(String name) {
+        ConfigurationSection offline = config.getConfigurationSection(OFFLINE_ROOT);
+        return offline == null ? null : findKeyIgnoreCase(offline, name);
+    }
+
+    private static String findKeyIgnoreCase(ConfigurationSection section, String name) {
+        for (String key : section.getKeys(false)) {
+            if (key.equalsIgnoreCase(name)) {
+                return key;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Поиск UUID только по локальному кэшу (players в chatdata.yml).
+     * {@code null}, если игрок ещё не заходил на сервер.
      */
     public UUID resolveUuid(String name) {
         lock.lock();
         try {
-            return nameToUuid.get(name.toLowerCase());
+            return nameToUuid.get(name.toLowerCase(Locale.ROOT));
         } finally {
             lock.unlock();
         }
-    }
-
-    /**
-     * Обращается к Mojang API за UUID игрока, которого нет в chatdata.yml,
-     * и сразу регистрирует найденную пару ник/UUID в файле. Выполняет
-     * блокирующий HTTP-запрос — вызывать только из async-задачи.
-     *
-     * @return UUID найденного игрока или {@code null}, если такого ника
-     * никогда не существовало / Mojang недоступен.
-     */
-    public UUID fetchAndRegisterFromMojang(String name) {
-        if (!VALID_NAME.matcher(name).matches()) {
-            return null;
-        }
-        try {
-            HttpClient client = HttpClient.newHttpClient();
-            HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create("https://api.mojang.com/users/profiles/minecraft/"
-                            + URLEncoder.encode(name, StandardCharsets.UTF_8)))
-                    .timeout(Duration.ofSeconds(5))
-                    .GET()
-                    .build();
-            HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
-            if (response.statusCode() != 200) {
-                return null; // 204/404 — такого ника не существует
-            }
-
-            String body = response.body();
-            Matcher idMatcher = MOJANG_ID.matcher(body);
-            Matcher nameMatcher = MOJANG_NAME.matcher(body);
-            if (!idMatcher.find() || !nameMatcher.find()) {
-                plugin.getLogger().warning("Неожиданный ответ Mojang API для '" + name + "': " + body);
-                return null;
-            }
-
-            UUID uuid = parseUndashedUuid(idMatcher.group(1));
-            String correctName = nameMatcher.group(1);
-            registerName(uuid, correctName);
-            return uuid;
-        } catch (IOException e) {
-            plugin.getLogger().warning("Не удалось обратиться к Mojang API: " + e.getMessage());
-            return null;
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            return null;
-        }
-    }
-
-    private static UUID parseUndashedUuid(String raw) {
-        String dashed = raw.replaceFirst(
-                "(\\w{8})(\\w{4})(\\w{4})(\\w{4})(\\w{12})",
-                "$1-$2-$3-$4-$5");
-        return UUID.fromString(dashed);
     }
 
     private void loadNameCache() {
         nameToUuid.clear();
 
-        ConfigurationSection playersSection = config.getConfigurationSection("players");
+        ConfigurationSection playersSection = config.getConfigurationSection(PLAYERS_ROOT);
         if (playersSection == null) {
             return;
         }
@@ -313,7 +323,7 @@ public class ChatDataManager {
                 continue;
             }
             try {
-                nameToUuid.put(name.toLowerCase(), UUID.fromString(uuidKey));
+                nameToUuid.put(name.toLowerCase(Locale.ROOT), UUID.fromString(uuidKey));
             } catch (IllegalArgumentException e) {
                 plugin.getLogger().warning("Некорректный UUID в chatdata.yml: " + uuidKey);
             }
