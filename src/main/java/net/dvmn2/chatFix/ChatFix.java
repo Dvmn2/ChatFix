@@ -25,7 +25,9 @@ public final class ChatFix extends JavaPlugin implements Listener {
         Lang.setLanguage(getConfig().getString("settings.language", "auto"));
 
         getServer().getPluginManager().registerEvents(this, this);
-        getServer().getPluginManager().registerEvents(new ChatListener(chatDataManager, settings), this);
+        ChatPlaceholders placeholders = new ChatPlaceholders();
+        getServer().getPluginManager().registerEvents(placeholders, this);
+        getServer().getPluginManager().registerEvents(new ChatListener(this, chatDataManager, settings, placeholders), this);
 
         ChatFixCommand chatFixCommand = new ChatFixCommand(chatDataManager, settings);
         this.getLifecycleManager().registerEventHandler(LifecycleEvents.COMMANDS, event -> {

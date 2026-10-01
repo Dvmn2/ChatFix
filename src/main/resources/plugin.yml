@@ -1,6 +1,6 @@
 name: ChatFix
 description: A plugin that changes how the chat works and allows operators to modify the prefix and suffix of individual players' messages.
-version: '1.2.0'
+version: '${version}'
 
 main: net.dvmn2.chatFix.ChatFix
 api-version: '1.21'
@@ -15,3 +15,9 @@ permissions:
   chatmanager.seehidden:
     description: Доступ к просмотру скрытых {фрагментов} чата
     default: op
+  chatmanager.item:
+    description: Использование [item] в чате
+    default: true
+  chatmanager.inv:
+    description: Использование [inv] в чате
+    default: true

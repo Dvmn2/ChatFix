@@ -34,6 +34,28 @@ Any part of a message wrapped in curly braces, e.g. `{secret}`, is removed for r
 sender and to players with the `chatmanager.seehidden` permission. If removing hidden segments leaves no visible text,
 regular players do not receive the message at all.
 
+### Placeholders
+
+Players can use these keywords anywhere in a message (case-insensitive, any number of times):
+
+| Keyword  | Replaced with                                                                                                                             |
+|----------|-------------------------------------------------------------------------------------------------------------------------------------------|
+| `[item]` | The item in the sender's main hand, e.g. `[Diamond Sword]`. Hovering shows the standard item tooltip. An empty hand shows `[Empty hand]`. |
+| `[inv]`  | `<PlayerName>'s inv`. Clicking it opens a read-only chest with a snapshot of the sender's inventory.                                      |
+
+The `[inv]` window is a 6-row chest:
+
+| Row | Content                                                          |
+|-----|------------------------------------------------------------------|
+| 1   | boots, leggings, chestplate, helmet, filler, off-hand, filler x3 |
+| 2   | filler                                                           |
+| 3-5 | main inventory (top, middle and bottom parts)                    |
+| 6   | hotbar                                                           |
+
+The snapshot is taken when the message is sent, so later changes to the inventory are not reflected. The link stays
+clickable for 30 minutes. Both keywords are ignored (left as plain text) for players without the corresponding
+permission. Placeholders inside hidden `{segments}` follow the same visibility rules as the rest of the segment.
+
 ### Per-player prefix/postfix
 
 Administrators can set a prefix and a postfix per player, independently for local, world and global chat. Values support
@@ -97,6 +119,8 @@ characters). Both accept the same `<mode> <param> <value>` tail.
 |-------------------------|------------------------------------------------------------|---------|
 | `chatmanager.admin`     | Access to `/chatfix` (per-player and global chat settings) | op      |
 | `chatmanager.seehidden` | View hidden `{segments}` in chat                           | op      |
+| `chatmanager.item`      | Use the `[item]` keyword in chat                           | true    |
+| `chatmanager.inv`       | Use the `[inv]` keyword in chat                            | true    |
 
 ## Configuration
 

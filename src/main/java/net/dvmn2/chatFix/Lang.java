@@ -38,7 +38,11 @@ public final class Lang {
         LOCAL_CHAT_IS_DISABLED,
         WORLD_CHAT_IS_DISABLED,
         GLOBAL_CHAT_IS_DISABLED,
-        TARGET_RESOLVE_FAILED
+        TARGET_RESOLVE_FAILED,
+        EMPTY_HAND,
+        INV_LABEL,
+        INV_HOVER,
+        INV_TITLE
     }
 
     private static final Map<Key, String> RU = new EnumMap<>(Key.class);
@@ -69,6 +73,10 @@ public final class Lang {
         RU.put(Key.WORLD_CHAT_IS_DISABLED, "§cМировой чат сейчас отключён администрацией.");
         RU.put(Key.GLOBAL_CHAT_IS_DISABLED, "§cГлобальный чат сейчас отключён администрацией.");
         RU.put(Key.TARGET_RESOLVE_FAILED, "§cНе удалось разрешить указанного игрока.");
+        RU.put(Key.EMPTY_HAND, "§7[Пустая рука]");
+        RU.put(Key.INV_LABEL, "%s's inv");
+        RU.put(Key.INV_HOVER, "§7Нажмите, чтобы посмотреть инвентарь");
+        RU.put(Key.INV_TITLE, "Инвентарь %s");
 
         EN.put(Key.INVALID_MODE, "§cMode must be local, world or global.");
         EN.put(Key.INVALID_PARAM, "§cParameter must be prefix, postfix, enabled or radius.");
@@ -94,6 +102,10 @@ public final class Lang {
         EN.put(Key.WORLD_CHAT_IS_DISABLED, "§cWorld chat is currently disabled by the administration.");
         EN.put(Key.GLOBAL_CHAT_IS_DISABLED, "§cGlobal chat is currently disabled by the administration.");
         EN.put(Key.TARGET_RESOLVE_FAILED, "§cCould not resolve the specified player.");
+        EN.put(Key.EMPTY_HAND, "§7[Empty hand]");
+        EN.put(Key.INV_LABEL, "%s's inv");
+        EN.put(Key.INV_HOVER, "§7Click to view the inventory");
+        EN.put(Key.INV_TITLE, "%s's inventory");
     }
 
     private static volatile String configuredLanguage = "auto";

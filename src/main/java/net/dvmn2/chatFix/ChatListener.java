@@ -14,6 +14,7 @@ import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
+import org.bukkit.plugin.java.JavaPlugin;
 
 import java.util.Collection;
 import java.util.List;
@@ -34,6 +35,8 @@ import java.util.regex.Pattern;
  * иначе сообщение целиком (вместе с "!"/"!!") уходит в локальный чат.
  * Фрагменты вида {текст} видит только отправитель и игроки с правом
  * chatmanager.seehidden, остальные видят сообщение без них.
+ * Ключевые слова [item] и [inv] подставляются через {@link ChatPlaceholders}.
+ * Рассылка выполняется на основном потоке: для [item]/[inv] нужно читать инвентарь игрока.
  */
 public class ChatListener implements Listener {
 
@@ -43,13 +46,18 @@ public class ChatListener implements Listener {
     private static final String GLOBAL_TRIGGER = "!!";
     private static final String WORLD_TRIGGER = "!";
 
+    private final JavaPlugin plugin;
     private final ChatDataManager dataManager;
     private final ChatSettings settings;
+    private final ChatPlaceholders placeholders;
     private final LegacyComponentSerializer legacy = LegacyComponentSerializer.legacyAmpersand();
 
-    public ChatListener(ChatDataManager dataManager, ChatSettings settings) {
+    public ChatListener(JavaPlugin plugin, ChatDataManager dataManager, ChatSettings settings,
+                        ChatPlaceholders placeholders) {
+        this.plugin = plugin;
         this.dataManager = dataManager;
         this.settings = settings;
+        this.placeholders = placeholders;
     }
 
     // HIGH — чтобы отработать после других плагинов, которые могут менять/отменять сообщение
@@ -102,7 +110,20 @@ public class ChatListener implements Listener {
             }
         }
 
-        deliver(sender, mode, text, profile);
+        scheduleDelivery(sender, mode, text, profile);
+    }
+
+    /**
+     * AsyncChatEvent приходит из async-потока, а снимок инвентаря ([item]/[inv]) безопасно
+     * делать только на основном. Все сообщения идут через основной поток — так порядок
+     * сообщений в чате не нарушается.
+     */
+    private void scheduleDelivery(Player sender, ChatMode mode, String text, ChatProfile profile) {
+        Bukkit.getScheduler().runTask(plugin, () -> {
+            if (sender.isOnline()) {
+                deliver(sender, mode, text, profile);
+            }
+        });
     }
 
     private boolean isEnabled(ChatMode mode, ChatProfile profile) {
@@ -134,11 +155,14 @@ public class ChatListener implements Listener {
         Component publicFormatted = buildMessage(prefix, parsed.publicText(), postfix);
         Component adminFormatted = buildMessage(prefix, parsed.adminText(), postfix);
 
+        // Снимок для [item]/[inv] — по админской версии текста (в ней есть и скрытые фрагменты).
+        ChatPlaceholders.Snapshot snapshot = placeholders.capture(sender, parsed.adminText());
+
         for (Player viewer : recipients(sender, mode, profile)) {
             if (isAdmin(viewer) || viewer == sender) {
-                viewer.sendMessage(adminFormatted);
+                viewer.sendMessage(placeholders.apply(adminFormatted, snapshot, viewer));
             } else if (!parsed.publicText().isEmpty()) {
-                viewer.sendMessage(publicFormatted);
+                viewer.sendMessage(placeholders.apply(publicFormatted, snapshot, viewer));
             }
         }
     }
